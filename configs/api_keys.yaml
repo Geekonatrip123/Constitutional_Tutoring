@@ -1,0 +1,29 @@
+# API Keys Configuration
+# DO NOT COMMIT THIS FILE TO VERSION CONTROL
+# Add this file to .gitignore
+
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY_HERE"
+  model: "gemini-1.5-pro"
+  temperature: 0.7
+  max_tokens: 2048
+  timeout: 60
+  retry_attempts: 3
+
+# Optional: If you want to use OpenAI as fallback
+openai:
+  api_key: "YOUR_OPENAI_API_KEY_HERE"  # Optional
+  model: "gpt-4"
+  enabled: false
+
+# Hugging Face (for downloading models)
+huggingface:
+  token: "YOUR_HF_TOKEN_HERE"  # Optional, for gated models
+  cache_dir: "./models/huggingface_cache"
+
+# Weights & Biases (for experiment tracking)
+wandb:
+  api_key: "YOUR_WANDB_API_KEY_HERE"  # Optional
+  project: "deliberative-tutor"
+  entity: "your-username"
+  enabled: false

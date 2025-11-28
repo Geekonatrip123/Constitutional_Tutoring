@@ -1,0 +1,91 @@
+# Student State Classifier Configuration (COSIKE + SEC)
+
+# COSIKE Enrichment Settings
+cosike:
+  llm_provider: "gemini"  # or "qwen" after fine-tuning
+  enrichment_prompt_template: |
+    Given the following student utterance in a tutoring context:
+    "{utterance}"
+    
+    Generate two pieces of information:
+    1. Scene Description: A brief description of the educational/emotional context (1-2 sentences)
+    2. Commonsense Knowledge: 5-7 relevant keywords or concepts
+    
+    Output as JSON with keys: "scene" and "knowledge" (knowledge should be a list)
+  
+  batch_size: 32
+  cache_dir: "./data/processed/cosike_cache"
+  save_enriched: true
+
+# SEC (Siamese Network) Training Settings
+sec_training:
+  base_encoder: "roberta-base"  # or "bert-base-uncased", "microsoft/deberta-v3-base"
+  embedding_dim: 256
+  
+  # Triplet loss settings
+  margin: 1.0
+  distance_metric: "euclidean"  # or "cosine"
+  
+  # Training hyperparameters
+  learning_rate: 2e-5
+  batch_size: 16
+  num_epochs: 5
+  warmup_steps: 500
+  weight_decay: 0.01
+  gradient_accumulation_steps: 2
+  
+  # Data settings
+  num_triplets_per_epoch: 50000
+  hard_negative_mining: true
+  
+  # Regularization
+  dropout: 0.1
+  max_grad_norm: 1.0
+  
+  # Checkpointing
+  save_steps: 1000
+  eval_steps: 500
+  checkpoint_dir: "./models/checkpoints/sec_mapper"
+  
+# k-NN Classification Settings
+knn_classifier:
+  k: 5
+  distance_metric: "euclidean"
+  weighting: "distance"  # or "uniform"
+
+# Pedagogical State Mapping
+pedagogical_states:
+  # Target states to predict
+  states:
+    - name: "is_confused"
+      description: "Student shows signs of cognitive confusion or misunderstanding"
+      dailydialog_mapping: ["sadness", "fear"]  # Approximate mapping
+      
+    - name: "is_frustrated"
+      description: "Student shows signs of frustration or irritation"
+      dailydialog_mapping: ["anger"]
+      
+    - name: "is_correct"
+      description: "Student's response indicates correct understanding"
+      dailydialog_mapping: ["happiness"]
+      
+    - name: "is_engaged"
+      description: "Student shows active engagement (not passive/bored)"
+      dailydialog_mapping: ["happiness", "surprise", "anger", "sadness", "fear", "disgust"]  # Anything but neutral
+  
+  # Output format
+  output_format: "probabilities"  # Output as [0-1] continuous values
+  
+# Data paths
+data:
+  dailydialog_path: "./data/raw/dailydialog"
+  enriched_dailydialog_path: "./data/processed/dailydialog_enriched.jsonl"
+  train_embeddings_path: "./data/processed/train_embeddings.pt"
+  train_labels_path: "./data/processed/train_labels.pt"
+
+# Validation settings
+validation:
+  test_size: 0.15
+  val_size: 0.15
+  random_seed: 42
+  stratify: true

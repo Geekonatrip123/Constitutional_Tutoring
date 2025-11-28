@@ -1,0 +1,251 @@
+# Evaluation Configuration
+
+# Test Scenarios
+test_scenarios:
+  num_scenarios: 50
+  domain: "algebra"
+  difficulty_distribution:
+    basic: 0.3      # 30% basic difficulty
+    intermediate: 0.5  # 50% intermediate
+    advanced: 0.2   # 20% advanced
+  
+  # Path for manually written scenarios
+  scenarios_path: "./data/test_scenarios.yaml"
+  
+  # Each scenario structure:
+  # - id: unique identifier
+  # - question: initial student question
+  # - target_skill: which math skill (from skills_taxonomy.yaml)
+  # - initial_state: starting student state
+  # - state_trajectory: expected state evolution over turns
+  # - expected_turns: how many turns this scenario should take
+
+# Student Simulator Configuration
+student_simulator:
+  llm_provider: "gemini"
+  simulation_method: "controlled_state_injection"
+  
+  # Deterministic behavior
+  use_seed: true
+  random_seed: 42
+  
+  # State transition control
+  state_trajectory_mode: "scripted"  # Follow predefined state transitions
+  
+  prompt_template: |
+    You are simulating a {grade_level} student learning {subject}.
+    
+    Current Context:
+    - Dialogue History: {history}
+    - Your Current State: {current_state}
+    - Target Skill: {skill}
+    - Tutor's Last Response: {tutor_response}
+    
+    Behavioral Guidelines:
+    - If state is "confused": Ask clarifying questions, express uncertainty
+    - If state is "frustrated": Show signs of giving up, express difficulty
+    - If state is "partially_correct": Show progress but with some errors
+    - If state is "correct": Demonstrate understanding, answer confidently
+    
+    Generate the student's next response (1-3 sentences).
+    Stay in character and reflect the specified emotional/cognitive state.
+  
+  # Response constraints
+  max_response_length: 150
+  temperature: 0.7
+  
+  # Validation: Does simulated behavior match expected patterns?
+  validate_state_consistency: true
+
+# Multi-turn Dialogue Settings
+dialogue:
+  min_turns: 5
+  max_turns: 10
+  early_stopping:
+    enabled: true
+    conditions:
+      - "student demonstrates mastery"
+      - "student explicitly quits"
+      - "conversation becomes unproductive (3 consecutive no-progress turns)"
+
+# Planners to Evaluate
+planners:
+  - name: "control"
+    type: "control_planner"
+    enabled: true
+    
+  - name: "experimental"
+    type: "experimental_planner"
+    enabled: true
+
+# Evaluation Metrics
+
+# 1. EFFECTIVENESS METRICS
+effectiveness:
+  
+  # Inferred Mastery Velocity (IMV)
+  imv:
+    enabled: true
+    knowledge_tracing_model: "AKT"  # Attentive Knowledge Tracing
+    kt_model_path: "./models/checkpoints/knowledge_tracing/akt_model.pt"
+    
+    # If no pre-trained model, train on ASSISTments
+    train_kt_if_missing: false
+    assistments_data_path: "./data/external/assistments_2012_2013"
+    
+    # Calculation
+    skill_list: "from_skills_taxonomy"  # Use skills from skills_taxonomy.yaml
+    aggregation_method: "sum_positive_changes"  # Sum all positive ΔP(mastery)
+  
+  # Productive Struggle Ratio
+  productive_struggle:
+    enabled: true
+    
+    # Define productive vs unproductive transitions
+    productive_transitions:
+      - ["error", "partial_success"]
+      - ["error", "success"]
+      - ["confused", "understanding"]
+    
+    unproductive_transitions:
+      - ["error", "quit"]
+      - ["error", "frustrated"]
+      - ["confused", "more_confused"]
+    
+    # Calculation
+    ratio_calculation: "productive_count / unproductive_count"
+    min_transitions_required: 3  # Need at least 3 transitions to calculate
+  
+  # Pedagogical Alignment Score
+  pedagogical_alignment:
+    enabled: true
+    alignment_scorer_path: "./models/checkpoints/alignment_scorer.pkl"
+    
+    # Score all tutor responses
+    score_all_responses: true
+    aggregation_method: "mean"  # Average across all turns
+
+# 2. ROBUSTNESS METRICS
+robustness:
+  
+  # Negative Affect Reduction Rate (NARR)
+  narr:
+    enabled: true
+    student_state_classifier_path: "./models/checkpoints/student_state_classifier"
+    
+    # Detection thresholds
+    negative_affect_threshold: 0.7  # is_frustrated > 0.7 triggers intervention
+    reduction_threshold: 0.3  # Decrease of >30% counts as success
+    
+    # Calculation
+    observation_window: 2  # Check T+2 turn after intervention at T
+    aggregation_method: "percentage"  # % of triggers that were resolved
+
+# 3. TRANSPARENCY METRICS
+transparency:
+  
+  # Deliberation-Action Congruence (DAC)
+  dac:
+    enabled: true
+    applies_to: ["experimental"]  # Only experimental planner has deliberations
+    
+    # Log alignment scores of chosen actions
+    track_chosen_scores: true
+    aggregation_method: "mean"
+  
+  # Principle Coverage Frequency (PCF)
+  pcf:
+    enabled: true
+    applies_to: ["experimental"]
+    
+    # Text analysis method
+    analysis_method: "keyword_spotting"  # or "semantic_similarity"
+    
+    # Keywords for each principle
+    principle_keywords:
+      foster_constructivism: ["guide", "discover", "generate", "construct", "socratic"]
+      manage_cognitive_load: ["cognitive load", "simplify", "overwhelm", "working memory"]
+      maintain_desirable_difficulty: ["zone", "difficulty", "challenge", "frustration"]
+      promote_metacognition: ["explain", "reasoning", "reflection", "thinking", "confidence"]
+      foster_positive_affect: ["motivation", "encourage", "affect", "frustration", "anxiety"]
+    
+    # Output
+    output_format: "frequency_distribution"  # Bar chart data
+
+# 4. EFFICIENCY METRICS
+efficiency:
+  
+  # Latency tracking
+  latency:
+    enabled: true
+    measure_wall_clock_time: true
+    unit: "milliseconds"
+    
+    # Break down by stage (for experimental planner)
+    track_stage_latency: true
+  
+  # Cost tracking
+  cost:
+    enabled: true
+    
+    # Token counting
+    count_input_tokens: true
+    count_output_tokens: true
+    
+    # Cost calculation (optional)
+    calculate_monetary_cost: false
+    api_pricing:
+      gemini_pro_input: 0.00025  # per 1K tokens
+      gemini_pro_output: 0.0005
+      qwen_local: 0.0  # Free (local inference)
+
+# Statistical Analysis
+statistics:
+  
+  # Comparison tests
+  comparison_tests:
+    - "t_test"  # For continuous metrics (IMV, latency, cost)
+    - "chi_square"  # For categorical outcomes
+    - "mann_whitney"  # Non-parametric alternative
+  
+  significance_level: 0.05
+  
+  # Effect size calculations
+  effect_sizes:
+    - "cohen_d"  # For t-tests
+    - "cramers_v"  # For chi-square
+  
+  # Multiple comparison correction
+  multiple_comparison_correction: "bonferroni"
+
+# Output Settings
+output:
+  results_dir: "./results"
+  
+  # Save detailed logs
+  save_dialogue_logs: true
+  save_planner_internals: true  # Deliberations, scores, etc.
+  
+  # Generate reports
+  generate_summary_report: true
+  generate_visualizations: true
+  
+  # Export formats
+  export_formats:
+    - "json"
+    - "csv"
+    - "latex_tables"
+  
+  # Visualization settings
+  visualizations:
+    - "metric_comparison_bars"
+    - "principle_coverage_chart"
+    - "state_transition_heatmap"
+    - "latency_boxplots"
+
+# Reproducibility
+reproducibility:
+  random_seed: 42
+  save_all_configs: true
+  log_software_versions: true
+  deterministic_mode: true

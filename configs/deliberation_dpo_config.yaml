@@ -1,0 +1,92 @@
+# Deliberation Generator DPO Training Configuration
+
+# Base Model Settings
+model:
+  base_model: "Qwen/Qwen2.5-8B-Instruct"
+  model_type: "causal_lm"
+  torch_dtype: "bfloat16"
+  device_map: "auto"
+  trust_remote_code: true
+
+# LoRA Configuration (for efficient fine-tuning)
+lora:
+  enabled: true
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# DPO Training Settings
+dpo:
+  beta: 0.1  # KL penalty coefficient
+  learning_rate: 5e-7
+  max_length: 1024
+  max_prompt_length: 512
+  
+  # Training hyperparameters
+  num_train_epochs: 2
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  
+  # Optimization
+  optim: "paged_adamw_32bit"
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler_type: "cosine"
+  
+  # Logging & checkpointing
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 50
+  save_total_limit: 3
+  
+  # Output
+  output_dir: "./models/checkpoints/qwen-deliberation-dpo"
+  run_name: "deliberation-generator-dpo"
+
+# Preference Pair Generation
+preference_pairs:
+  num_pairs: 5000
+  generation_method: "dual_generation"  # Generate 2 deliberations, score both
+  
+  prompt_template: |
+    You are an expert tutor reasoning about pedagogical principles.
+    
+    Student State: {state_json}
+    Candidate Action: {action}
+    
+    The 5 Pedagogical Principles:
+    1. Foster Constructivism: Guide, don't just tell
+    2. Manage Cognitive Load: Don't overwhelm the student
+    3. Maintain Desirable Difficulty: Keep student in the zone
+    4. Promote Metacognition: Encourage reflection on thinking
+    5. Foster Positive Affect: Keep student willing to learn
+    
+    Generate a deliberation explaining how this action aligns with these principles.
+    Think step-by-step about:
+    - Which principles are most relevant given the student state?
+    - What are the potential benefits of this action?
+    - What are the potential risks?
+    - How does this action balance different pedagogical goals?
+  
+  # Scoring via alignment scorer
+  use_alignment_scorer: true
+  alignment_scorer_path: "./models/checkpoints/alignment_scorer.pkl"
+  
+  # Output
+  output_path: "./data/processed/preference_pairs.jsonl"
+
+# Data paths
+data:
+  synthetic_deliberations_path: "./data/processed/synthetic_deliberations.csv"
+  preference_pairs_path: "./data/processed/preference_pairs.jsonl"
+
+# Validation
+validation:
+  test_size: 0.1
+  random_seed: 42

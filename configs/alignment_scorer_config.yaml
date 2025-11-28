@@ -1,0 +1,82 @@
+# Alignment Scorer Configuration (XGBoost)
+
+# Synthetic Data Generation
+synthetic_data:
+  num_examples: 5000
+  llm_provider: "gemini"
+  
+  # Prompts for generation
+  deliberation_generation_prompt: |
+    You are a pedagogical expert evaluating tutoring actions.
+    
+    Student State: {state_json}
+    Candidate Action: {action}
+    Pedagogical Constitution:
+    {constitution}
+    
+    Generate a brief deliberation (3-5 sentences) explaining how this action aligns with or violates the pedagogical principles.
+    Consider:
+    - Which principles are relevant?
+    - Does this action support or hinder learning?
+    - What are the pedagogical trade-offs?
+    
+  score_generation_prompt: |
+    You are a pedagogical expert rating alignment with established principles.
+    
+    Deliberation: {deliberation_text}
+    Pedagogical Constitution:
+    {constitution}
+    
+    Rate how well this reasoning aligns with pedagogical best practices on a scale of 0.0 to 1.0:
+    - 1.0: Perfectly aligned, follows all relevant principles
+    - 0.7-0.9: Mostly aligned, considers key principles
+    - 0.4-0.6: Partially aligned, some pedagogical awareness
+    - 0.1-0.3: Poorly aligned, violates principles
+    - 0.0: Completely misaligned
+    
+    Output only the numerical score.
+  
+  diversity_settings:
+    student_states_variety: 50  # Generate 50 different state combinations
+    actions_per_state: 10  # Try all 10 actions per state
+    temperature: 0.8
+  
+  output_path: "./data/processed/synthetic_deliberations.csv"
+
+# Sentence Embedding Settings
+sentence_embeddings:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_dim: 384
+  normalize: true
+  batch_size: 64
+
+# XGBoost Training Settings
+xgboost:
+  objective: "reg:squarederror"
+  eval_metric: "rmse"
+  
+  # Hyperparameters
+  max_depth: 6
+  learning_rate: 0.1
+  n_estimators: 200
+  subsample: 0.8
+  colsample_bytree: 0.8
+  gamma: 0.1
+  reg_alpha: 0.1
+  reg_lambda: 1.0
+  
+  # Training settings
+  early_stopping_rounds: 20
+  random_state: 42
+  n_jobs: -1
+  
+  # Output
+  model_path: "./models/checkpoints/alignment_scorer.pkl"
+  feature_importance_path: "./models/checkpoints/alignment_scorer_features.json"
+
+# Validation
+validation:
+  test_size: 0.2
+  val_size: 0.1
+  cross_validation_folds: 5
+  random_seed: 42

@@ -1,0 +1,83 @@
+# Math Skills Taxonomy for Knowledge Tracing
+# Domain: Middle/High School Algebra
+
+skills:
+  - id: 1
+    name: "understanding_variables"
+    description: "Understanding what variables represent and how to use them"
+    difficulty: "basic"
+    prerequisites: []
+    
+  - id: 2
+    name: "solving_linear_equations"
+    description: "Solving equations of the form ax + b = c"
+    difficulty: "basic"
+    prerequisites: [1]
+    
+  - id: 3
+    name: "working_with_fractions"
+    description: "Adding, subtracting, multiplying, and dividing fractions"
+    difficulty: "basic"
+    prerequisites: []
+    
+  - id: 4
+    name: "order_of_operations"
+    description: "Applying PEMDAS/BODMAS correctly"
+    difficulty: "basic"
+    prerequisites: []
+    
+  - id: 5
+    name: "word_problem_translation"
+    description: "Translating word problems into mathematical expressions"
+    difficulty: "intermediate"
+    prerequisites: [1, 2]
+    
+  - id: 6
+    name: "combining_like_terms"
+    description: "Simplifying expressions by combining similar terms"
+    difficulty: "basic"
+    prerequisites: [1]
+    
+  - id: 7
+    name: "distributive_property"
+    description: "Applying a(b + c) = ab + ac"
+    difficulty: "intermediate"
+    prerequisites: [1, 6]
+    
+  - id: 8
+    name: "solving_inequalities"
+    description: "Solving and graphing inequalities"
+    difficulty: "intermediate"
+    prerequisites: [2]
+    
+  - id: 9
+    name: "systems_of_equations"
+    description: "Solving two equations with two unknowns"
+    difficulty: "advanced"
+    prerequisites: [2, 6]
+    
+  - id: 10
+    name: "quadratic_equations"
+    description: "Solving equations of the form ax² + bx + c = 0"
+    difficulty: "advanced"
+    prerequisites: [2, 7]
+
+# Skill groupings for organization
+skill_groups:
+  foundational:
+    - understanding_variables
+    - working_with_fractions
+    - order_of_operations
+    
+  algebraic_manipulation:
+    - combining_like_terms
+    - distributive_property
+    - solving_linear_equations
+    
+  problem_solving:
+    - word_problem_translation
+    - solving_inequalities
+    
+  advanced:
+    - systems_of_equations
+    - quadratic_equations
