@@ -329,7 +329,7 @@ def main():
     """Main execution function."""
     
     # Configuration
-    API_KEY = "AIzaSyCOJ2GlTMWvgbZBlD0DC38EPqy_NZ_dGoU"
+    API_KEY = "AIzaSyAsl7Dvet04WIc45yL-1GsHAfy1DScaGEQ"
     MODEL_NAME = "gemini-2.5-flash"  # NO "models/" prefix!
     
     # Paths
@@ -352,6 +352,33 @@ def main():
         save_every=50,
         rate_limit_delay=2.5,  # 2.5s between calls = ~1400 calls/hour
         resume=True  # Continue from where you left off
+    )
+    # Enrich validation set (NEW)
+    logger.info("=" * 80)
+    logger.info("ENRICHING VALIDATION SET")
+    logger.info("=" * 80)
+    enricher.enrich_dataset(
+        input_csv=str(DATA_DIR / "validation_daily.csv"),
+        output_jsonl=str(OUTPUT_DIR / "validation_dailydialog_enriched.jsonl"),
+        dialogues_per_batch=10,
+        max_samples=None,
+        save_every=50,
+        rate_limit_delay=2.5,
+        resume=True
+    )
+    
+    # Enrich test set (NEW)
+    logger.info("=" * 80)
+    logger.info("ENRICHING TEST SET")
+    logger.info("=" * 80)
+    enricher.enrich_dataset(
+        input_csv=str(DATA_DIR / "test_daily.csv"),
+        output_jsonl=str(OUTPUT_DIR / "test_dailydialog_enriched.jsonl"),
+        dialogues_per_batch=10,
+        max_samples=None,
+        save_every=50,
+        rate_limit_delay=2.5,
+        resume=True
     )
     
     logger.info("=" * 80)
