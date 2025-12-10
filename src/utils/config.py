@@ -48,6 +48,7 @@ class Config:
             'deliberation_dpo': 'deliberation_dpo_config.yaml',
             'planner': 'planner_config.yaml',
             'evaluation': 'evaluation_config.yaml',
+            'sec_training': 'sec_training_config.yaml',
         }
         
         for key, filename in config_files.items():

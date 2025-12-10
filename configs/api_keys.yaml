@@ -3,27 +3,23 @@
 # Add this file to .gitignore
 
 gemini:
-  api_key: "YOUR_GEMINI_API_KEY_HERE"
-  model: "gemini-1.5-pro"
+  api_key: "AIzaSyCOJ2GlTMWvgbZBlD0DC38EPqy_NZ_dGoU"
+  model: "gemini-2.5-flash"
   temperature: 0.7
   max_tokens: 2048
   timeout: 60
   retry_attempts: 3
 
-# Optional: If you want to use OpenAI as fallback
-openai:
-  api_key: "YOUR_OPENAI_API_KEY_HERE"  # Optional
-  model: "gpt-4"
-  enabled: false
+
 
 # Hugging Face (for downloading models)
 huggingface:
-  token: "YOUR_HF_TOKEN_HERE"  # Optional, for gated models
+  token: "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"  # Optional, for gated models
   cache_dir: "./models/huggingface_cache"
 
 # Weights & Biases (for experiment tracking)
 wandb:
-  api_key: "YOUR_WANDB_API_KEY_HERE"  # Optional
+  api_key: "22722f1c9f32723a4d56cef13078ca029c31f73f"  # Optional
   project: "deliberative-tutor"
-  entity: "your-username"
+  entity: "shlok-sand"
   enabled: false

@@ -1,8 +1,7 @@
 # Core dependencies
-python>=3.9
+
 
 # Deep Learning & ML
-torch>=2.0.0
 transformers>=4.35.0
 sentence-transformers>=2.2.2
 xgboost>=2.0.0

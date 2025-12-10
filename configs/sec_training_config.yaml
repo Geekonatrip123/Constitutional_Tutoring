@@ -1,0 +1,27 @@
+# SEC Training Configuration - OPTIMIZED FOR RTX 4060 8GB
+
+# Model architecture
+base_encoder: "roberta-base"
+embedding_dim: 256
+dropout: 0.1
+freeze_encoder: false
+
+# Triplet loss
+margin: 1.0
+distance_metric: "euclidean"
+
+# Training hyperparameters
+batch_size: 32  # ✅ Should fit in 8GB
+num_epochs: 5
+learning_rate: 0.00002
+weight_decay: 0.01
+warmup_steps: 500
+max_grad_norm: 1.0
+
+# Checkpointing
+checkpoint_dir: "./models/checkpoints/sec_mapper"
+save_steps: 1000
+eval_steps: 500
+
+# Hardware
+device: "cuda"
