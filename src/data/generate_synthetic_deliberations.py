@@ -374,10 +374,10 @@ def main():
     """Main execution."""
 
     API_KEYS = [
-        "AIzaSyAsl7Dvet04WIc45yL-1GsHAfy1DScaGEQ",
+        "AIzaSyB9K2sxcDqJEqsbnnD2PZbcUtkhVy3c51o",
         "AIzaSyCTql2C66tkY3IPVMV0g0K_CHae_ZCL7FU",
         "AIzaSyCOJ2GlTMWvgbZBlD0DC38EPqy_NZ_dGoU",
-        "AIzaSyBSktHO98I4-OpQZ839tSGARskV37uV1rI"
+        "AIzaSyAsl7Dvet04WIc45yL-1GsHAfy1DScaGEQ"
     ]
     MODEL_NAME = "gemini-2.5-flash"
 
