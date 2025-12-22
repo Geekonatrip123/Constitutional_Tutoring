@@ -47,7 +47,7 @@ class COSIKEEnricher:
     Phase 1: COSIKE Enrichment
     Adds scene description and commonsense knowledge to utterances.
     """
-    
+
     def __init__(self, llm_api, use_cache: bool = True, cache_dir: str = "./data/processed/cosike_cache"):
         """
         Initialize COSIKE enricher.
@@ -60,15 +60,15 @@ class COSIKEEnricher:
         self.llm_api = llm_api
         self.use_cache = use_cache
         self.cache_dir = Path(cache_dir)
-        
+
         if use_cache:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.cache = self._load_cache()
         else:
             self.cache = {}
-        
+
         logger.info("COSIKE Enricher initialized")
-    
+
     def _load_cache(self) -> Dict:
         """Load cache from disk."""
         cache_file = self.cache_dir / "enrichment_cache.json"
@@ -78,13 +78,13 @@ class COSIKEEnricher:
             logger.info(f"Loaded {len(cache)} cached enrichments")
             return cache
         return {}
-    
+
     def _save_cache(self):
         """Save cache to disk."""
         cache_file = self.cache_dir / "enrichment_cache.json"
         with open(cache_file, 'w') as f:
             json.dump(self.cache, f)
-    
+
     def enrich(self, utterance: str) -> Dict[str, any]:
         """
         Enrich a single utterance with scene and knowledge.
@@ -98,42 +98,95 @@ class COSIKEEnricher:
         # Check cache
         if self.use_cache and utterance in self.cache:
             return self.cache[utterance]
-        
+
         # Generate enrichment via LLM
-        prompt = f"""Given the following utterance in a conversational context:
-"{utterance}"
+        prompt = f"""Analyze this student utterance and provide context enrichment:
 
-Generate:
-1. Scene Description: A brief description of the conversational context, with specific emphasis on the emotional tone and any feelings being expressed by the speaker (1-2 sentences)
-2. Commonsense Knowledge: Relevant keywords or concepts related to the utterance (5-7 keywords)
+Utterance: "{utterance}"
 
-Output as JSON with keys: "scene" and "knowledge" (knowledge should be a list)
-"""
-        
+Provide:
+1. Scene Description: Describe the conversational context in 1-2 sentences. IMPORTANT: Explicitly mention the emotional state (e.g., frustrated, confused, happy, confident, anxious, stuck).
+
+2. Knowledge Keywords: List 5-7 relevant keywords, including emotion words.
+
+Respond with ONLY this exact JSON format (no extra text):
+{{"scene": "description here", "knowledge": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]}}
+
+JSON:"""
+
         try:
-            # Call LLM
-            response = self.llm_api.generate_json(prompt, temperature=0.7, max_tokens=256)
-            
+            # Call LLM with lower temperature for more consistent JSON
+            response = self.llm_api.generate_json(prompt, temperature=0.3, max_tokens=4000)
+
+            # Validate response
+            if not isinstance(response, dict):
+                raise ValueError(f"Response is not a dictionary: {type(response)}")
+
+            if 'scene' not in response:
+                raise ValueError("Missing 'scene' key in response")
+
+            if 'knowledge' not in response:
+                raise ValueError("Missing 'knowledge' key in response")
+
+            # Clean and validate
+            scene = str(response['scene']).strip()
+            knowledge = response['knowledge']
+
+            if not isinstance(knowledge, list):
+                knowledge = ['unknown']
+
+            # Ensure all knowledge items are strings
+            knowledge = [str(k).strip() for k in knowledge if k]
+
+            if not knowledge:
+                knowledge = ['unknown']
+
             enrichment = {
-                'scene': response.get('scene', 'Unable to determine scene'),
-                'knowledge': response.get('knowledge', ['unknown'])
+                'scene': scene,
+                'knowledge': knowledge
             }
-            
+
             # Cache result
             if self.use_cache:
                 self.cache[utterance] = enrichment
-                if len(self.cache) % 100 == 0:  # Save every 100 new entries
+                if len(self.cache) % 100 == 0:
                     self._save_cache()
-            
+
+            logger.debug(f"Enrichment successful: scene length={len(scene)}, knowledge count={len(knowledge)}")
+
             return enrichment
-            
+
         except Exception as e:
-            logger.warning(f"Enrichment failed: {e}, using defaults")
+            logger.warning(f"Enrichment failed: {e}, using smart fallback")
+
+            # Intelligent fallback based on utterance content
+            msg_lower = utterance.lower()
+
+            # Detect emotional tone
+            if any(word in msg_lower for word in ['frustrated', 'frustrating', 'annoying', "can't"]):
+                scene = "A student expressing frustration while working on a problem, showing signs of emotional difficulty"
+                knowledge = ['frustrated', 'negative emotion', 'difficulty', 'stuck', 'challenged']
+            elif any(word in msg_lower for word in ['confused', "don't understand", 'unclear', 'what', 'how']):
+                scene = "A student expressing confusion about a concept, seeking clarification and understanding"
+                knowledge = ['confused', 'uncertainty', 'questioning', 'help-seeking', 'unclear']
+            elif any(word in msg_lower for word in ['got it', 'understand', 'makes sense', 'i see', 'oh']):
+                scene = "A student expressing understanding and satisfaction after grasping a concept"
+                knowledge = ['happy', 'positive emotion', 'understanding', 'clarity', 'success']
+            elif any(word in msg_lower for word in ['stuck', 'blocked', 'lost']):
+                scene = "A student feeling stuck on a problem, experiencing cognitive difficulty"
+                knowledge = ['stuck', 'blocked', 'difficulty', 'challenged', 'uncertain']
+            elif '?' in utterance:
+                scene = "A student asking a question, seeking information or clarification"
+                knowledge = ['questioning', 'curious', 'help-seeking', 'inquiry', 'neutral']
+            else:
+                scene = "A student engaging in a learning conversation with neutral tone"
+                knowledge = ['neutral', 'learning', 'communication', 'engaged', 'thinking']
+
             return {
-                'scene': 'Unable to determine scene',
-                'knowledge': ['unknown']
+                'scene': scene,
+                'knowledge': knowledge
             }
-    
+
     def create_enriched_text(self, utterance: str, scene: str, knowledge: List[str]) -> str:
         """
         Combine utterance, scene, and knowledge into enriched text.
@@ -156,7 +209,7 @@ class SECEmbedder:
     Phase 2: SEC Embedding
     Encodes enriched text into embedding space using trained SEC model.
     """
-    
+
     def __init__(
         self,
         model: SECEmotionMapper,
@@ -175,9 +228,9 @@ class SECEmbedder:
         self.model.eval()
         self.tokenizer = tokenizer
         self.device = device
-        
+
         logger.info("SEC Embedder initialized")
-    
+
     def embed(self, enriched_text: str, max_length: int = 128) -> np.ndarray:
         """
         Embed enriched text into vector space.
@@ -197,14 +250,14 @@ class SECEmbedder:
             max_length=max_length,
             return_tensors='pt'
         )
-        
+
         input_ids = encoded['input_ids'].to(self.device)
         attention_mask = encoded['attention_mask'].to(self.device)
-        
+
         # Encode
         with torch.no_grad():
             embedding = self.model(input_ids, attention_mask)
-        
+
         return embedding.cpu().numpy().flatten()
 
 
@@ -213,7 +266,7 @@ class kNNClassifier:
     Phase 3: k-NN Classification
     Classifies based on nearest neighbors in embedding space.
     """
-    
+
     def __init__(
         self,
         train_embeddings: np.ndarray,
@@ -234,12 +287,12 @@ class kNNClassifier:
         self.train_labels = train_labels
         self.k = k
         self.distance_metric = distance_metric
-        
+
         logger.info(f"k-NN Classifier initialized:")
         logger.info(f"  Training samples: {len(train_embeddings)}")
         logger.info(f"  k: {k}")
         logger.info(f"  Distance metric: {distance_metric}")
-    
+
     def predict(self, query_embedding: np.ndarray) -> str:
         """
         Predict emotion label for query embedding.
@@ -252,22 +305,22 @@ class kNNClassifier:
         """
         # Compute distances to all training samples
         query_embedding = query_embedding.reshape(1, -1)
-        
+
         if self.distance_metric == "euclidean":
             distances = cdist(query_embedding, self.train_embeddings, metric='euclidean').flatten()
         elif self.distance_metric == "cosine":
             distances = cdist(query_embedding, self.train_embeddings, metric='cosine').flatten()
         else:
             raise ValueError(f"Unknown distance metric: {self.distance_metric}")
-        
+
         # Find k nearest neighbors
         k_nearest_indices = np.argsort(distances)[:self.k]
         k_nearest_labels = [self.train_labels[i] for i in k_nearest_indices]
-        
+
         # Vote: most common label
         label_counts = Counter(k_nearest_labels)
         predicted_label = label_counts.most_common(1)[0][0]
-        
+
         return predicted_label
 
 
@@ -278,7 +331,7 @@ class StudentStateClassifier:
     Pipeline:
         Raw utterance → COSIKE enrichment → SEC embedding → k-NN classification → Pedagogical state
     """
-    
+
     def __init__(
         self,
         cosike_enricher: COSIKEEnricher,
@@ -299,9 +352,9 @@ class StudentStateClassifier:
         self.sec_embedder = sec_embedder
         self.knn_classifier = knn_classifier
         self.emotion_map = emotion_to_pedagogical_map
-        
+
         logger.info("Complete Student State Classifier initialized")
-    
+
     def predict(self, utterance: str) -> str:
         """
         Predict pedagogical state for a student utterance.
@@ -319,18 +372,18 @@ class StudentStateClassifier:
             enrichment['scene'],
             enrichment['knowledge']
         )
-        
+
         # Phase 2: SEC embedding
         embedding = self.sec_embedder.embed(enriched_text)
-        
+
         # Phase 3: k-NN classification
         dailydialog_emotion = self.knn_classifier.predict(embedding)
-        
+
         # Map to pedagogical state
         pedagogical_state = self.emotion_map.get(dailydialog_emotion, "neutral")
-        
+
         return pedagogical_state
-    
+
     def predict_with_details(self, utterance: str) -> Dict[str, any]:
         """
         Predict with full details for debugging/analysis.
@@ -348,16 +401,16 @@ class StudentStateClassifier:
             enrichment['scene'],
             enrichment['knowledge']
         )
-        
+
         # Phase 2: SEC embedding
         embedding = self.sec_embedder.embed(enriched_text)
-        
+
         # Phase 3: k-NN classification
         dailydialog_emotion = self.knn_classifier.predict(embedding)
-        
+
         # Map to pedagogical state
         pedagogical_state = self.emotion_map.get(dailydialog_emotion, "neutral")
-        
+
         return {
             'utterance': utterance,
             'enrichment': enrichment,
@@ -393,12 +446,12 @@ def load_student_state_classifier(
         Complete StudentStateClassifier
     """
     logger.info("Loading Student State Classifier...")
-    
+
     # Load SEC model
     logger.info("Loading SEC model...")
     checkpoint = torch.load(sec_checkpoint_path, map_location=device)
     model_config = checkpoint['config']
-    
+
     sec_model = SECEmotionMapper(
         base_encoder=model_config['base_encoder'],
         embedding_dim=model_config['embedding_dim'],
@@ -407,20 +460,20 @@ def load_student_state_classifier(
     sec_model.load_state_dict(checkpoint['model_state_dict'])
     sec_model.to(device)
     sec_model.eval()
-    
+
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
-    
+
     # Load training embeddings and labels
     logger.info("Loading training embeddings and labels...")
     train_embeddings = np.load(train_embeddings_path)
     train_labels_raw = np.load(train_labels_path)
-    
+
     # Convert numeric labels to emotion names
     train_labels = [DAILYDIALOG_EMOTIONS[int(label)] for label in train_labels_raw]
-    
+
     logger.info(f"Training set: {len(train_embeddings)} samples")
-    
+
     # Create components
     cosike_enricher = COSIKEEnricher(llm_api=llm_api, use_cache=True)
     sec_embedder = SECEmbedder(model=sec_model, tokenizer=tokenizer, device=device)
@@ -430,16 +483,16 @@ def load_student_state_classifier(
         k=k,
         distance_metric="euclidean"
     )
-    
+
     # Create complete classifier
     classifier = StudentStateClassifier(
         cosike_enricher=cosike_enricher,
         sec_embedder=sec_embedder,
         knn_classifier=knn_classifier
     )
-    
+
     logger.info("Student State Classifier loaded successfully!")
-    
+
     return classifier
 
 
@@ -449,16 +502,16 @@ if __name__ == "__main__":
     sys.path.append(str(Path(__file__).parent.parent.parent))
     from src.utils.llm_utils import GeminiAPI
     from src.utils.config import load_config
-    
+
     # Load config
     config = load_config()
-    
+
     # Create Gemini API
     gemini = GeminiAPI(config.api_keys.gemini.to_dict())
-    
+
     # Load classifier
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     classifier = load_student_state_classifier(
         sec_checkpoint_path="./models/checkpoints/sec_mapper/best_model.pt",
         tokenizer_dir="./models/checkpoints/sec_mapper/tokenizer",
@@ -468,7 +521,7 @@ if __name__ == "__main__":
         device=device,
         k=5
     )
-    
+
     # Test predictions
     test_utterances = [
         "I don't understand what you mean by derivative",
@@ -477,14 +530,14 @@ if __name__ == "__main__":
         "Whatever, I don't care anymore",
         "Can you explain that again?"
     ]
-    
+
     print("\n" + "="*80)
     print("TESTING STUDENT STATE CLASSIFIER")
     print("="*80 + "\n")
-    
+
     for utterance in test_utterances:
         result = classifier.predict_with_details(utterance)
-        
+
         print(f"Utterance: {result['utterance']}")
         print(f"Scene: {result['enrichment']['scene']}")
         print(f"Knowledge: {', '.join(result['enrichment']['knowledge'])}")

@@ -15,7 +15,7 @@ class GeminiAPI:
     """
     Wrapper for Google Gemini API with retry logic and error handling.
     """
-    
+
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize Gemini API client.
@@ -29,7 +29,7 @@ class GeminiAPI:
         self.max_tokens = config.get('max_tokens', 2048)
         self.timeout = config.get('timeout', 60)
         self.retry_attempts = config.get('retry_attempts', 3)
-        
+
         # Initialize Gemini client
         try:
             import google.generativeai as genai
@@ -43,12 +43,12 @@ class GeminiAPI:
         except Exception as e:
             logger.error(f"Failed to initialize Gemini API: {e}")
             raise
-        
+
         # Track API usage
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_calls = 0
-    
+
     def generate(
         self,
         prompt: str,
@@ -70,38 +70,38 @@ class GeminiAPI:
         """
         temperature = temperature if temperature is not None else self.temperature
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
-        
+
         generation_config = self.genai.types.GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
             stop_sequences=stop_sequences,
         )
-        
+
         for attempt in range(self.retry_attempts):
             try:
                 response = self.client.generate_content(
                     prompt,
                     generation_config=generation_config,
                 )
-                
+
                 # Extract text
                 if response.text:
                     output = response.text
                 else:
                     logger.warning("Empty response from Gemini API")
                     output = ""
-                
+
                 # Track usage (approximate since Gemini doesn't provide exact token counts)
                 self.total_input_tokens += len(prompt.split()) * 1.3  # Rough estimate
                 self.total_output_tokens += len(output.split()) * 1.3
                 self.total_calls += 1
-                
+
                 logger.debug(f"Gemini API call successful (attempt {attempt + 1})")
                 return output
-                
+
             except Exception as e:
                 logger.warning(f"Gemini API call failed (attempt {attempt + 1}/{self.retry_attempts}): {e}")
-                
+
                 if attempt < self.retry_attempts - 1:
                     # Exponential backoff
                     sleep_time = 2 ** attempt
@@ -110,43 +110,108 @@ class GeminiAPI:
                 else:
                     logger.error(f"All retry attempts failed for Gemini API")
                     raise
-    
-    def generate_json(
-        self,
-        prompt: str,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
+
+    def generate_json(self, prompt: str, temperature: float = 0.7, max_tokens: int = 512) -> Dict:
         """
-        Generate JSON output using Gemini API.
+        Generate JSON response from Gemini with robust parsing.
         
         Args:
-            prompt: Input prompt (should request JSON output)
+            prompt: Input prompt
             temperature: Sampling temperature
-            max_tokens: Maximum tokens
-            
+            max_tokens: Max tokens to generate
+        
         Returns:
-            Parsed JSON as dictionary
+            Parsed JSON dictionary
         """
-        # Add JSON formatting instruction
-        json_prompt = f"{prompt}\n\nOutput valid JSON only."
-        
-        output = self.generate(json_prompt, temperature, max_tokens)
-        
-        # Try to parse JSON
         try:
-            # Extract JSON from markdown code blocks if present
-            if "```json" in output:
-                output = output.split("```json")[1].split("```")[0].strip()
-            elif "```" in output:
-                output = output.split("```")[1].split("```")[0].strip()
-            
-            return json.loads(output)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from Gemini output: {e}")
-            logger.error(f"Raw output: {output}")
-            raise ValueError(f"Invalid JSON response from Gemini: {output}")
-    
+            # Configure generation
+            generation_config = self.genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                candidate_count=1
+            )
+
+            # Generate
+            response = self.client.generate_content(
+                prompt,
+                generation_config=generation_config
+            )
+
+            # Extract text
+            response_text = response.text.strip()
+
+            logger.debug(f"Gemini raw response length: {len(response_text)}")
+            logger.debug(f"Gemini raw response: {response_text[:200]}...")
+
+            # Clean up response
+            response_text = response_text.strip()
+
+            # Remove markdown code blocks
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            elif response_text.startswith("```"):
+                response_text = response_text[3:]
+
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+
+            response_text = response_text.strip()
+
+            # Try to parse JSON
+            try:
+                parsed = json.loads(response_text)
+                logger.debug(f"Successfully parsed JSON")
+                return parsed
+
+            except json.JSONDecodeError as e:
+                logger.warning(f"Initial JSON parse failed: {e}")
+
+                # Try to find and extract the JSON object
+                import re
+
+                # Look for JSON object pattern
+                json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+
+                if json_match:
+                    json_str = json_match.group(0)
+                    logger.debug(f"Extracted JSON: {json_str}")
+
+                    try:
+                        parsed = json.loads(json_str)
+                        logger.debug(f"Successfully parsed extracted JSON")
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
+
+                # Last resort: try to reconstruct JSON
+                logger.error(f"Failed to parse JSON. Raw output: {response_text}")
+
+                # Extract scene and knowledge with regex
+                scene_match = re.search(r'"scene"\s*:\s*"([^"]*)"', response_text)
+                knowledge_match = re.search(r'"knowledge"\s*:\s*\[(.*?)\]', response_text, re.DOTALL)
+
+                if scene_match:
+                    scene = scene_match.group(1)
+                    knowledge = []
+
+                    if knowledge_match:
+                        knowledge_str = knowledge_match.group(1)
+                        # Extract quoted strings
+                        knowledge = re.findall(r'"([^"]*)"', knowledge_str)
+
+                    logger.warning(f"Reconstructed JSON from partial response")
+                    return {
+                        'scene': scene,
+                        'knowledge': knowledge if knowledge else ['unknown']
+                    }
+
+                # Complete failure
+                raise ValueError(f"Invalid JSON response from Gemini: {response_text}")
+
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}")
+            raise
+
     def get_usage_stats(self) -> Dict[str, int]:
         """
         Get API usage statistics.
@@ -166,7 +231,7 @@ class QwenLocal:
     """
     Local inference with fine-tuned Qwen models.
     """
-    
+
     def __init__(
         self,
         model_path: str,
@@ -185,48 +250,48 @@ class QwenLocal:
         """
         self.model_path = model_path
         self.device = device
-        
+
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
             import torch
-            
+
             logger.info(f"Loading Qwen model from: {model_path}")
-            
+
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_path,
                 trust_remote_code=True,
             )
-            
+
             # Load model
             load_kwargs = {
                 'trust_remote_code': True,
                 'device_map': device,
             }
-            
+
             if load_in_8bit:
                 load_kwargs['load_in_8bit'] = True
             elif load_in_4bit:
                 load_kwargs['load_in_4bit'] = True
             else:
                 load_kwargs['torch_dtype'] = torch.bfloat16
-            
+
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 **load_kwargs
             )
-            
+
             self.model.eval()
-            
+
             logger.info("Qwen model loaded successfully")
-            
+
         except ImportError:
             logger.error("transformers not installed. Run: pip install transformers")
             raise
         except Exception as e:
             logger.error(f"Failed to load Qwen model: {e}")
             raise
-    
+
     def generate(
         self,
         prompt: str,
@@ -249,13 +314,13 @@ class QwenLocal:
             Generated text
         """
         import torch
-        
+
         # Tokenize
         inputs = self.tokenizer(prompt, return_tensors="pt")
-        
+
         if self.device != "cpu":
             inputs = {k: v.cuda() for k, v in inputs.items()}
-        
+
         # Generate
         with torch.no_grad():
             outputs = self.model.generate(
@@ -267,15 +332,15 @@ class QwenLocal:
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
-        
+
         # Decode
         generated_text = self.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True,
         )
-        
+
         return generated_text
-    
+
     def generate_json(
         self,
         prompt: str,
@@ -294,16 +359,16 @@ class QwenLocal:
             Parsed JSON dictionary
         """
         json_prompt = f"{prompt}\n\nOutput valid JSON only."
-        
+
         output = self.generate(json_prompt, max_new_tokens, temperature)
-        
+
         # Parse JSON
         try:
             if "```json" in output:
                 output = output.split("```json")[1].split("```")[0].strip()
             elif "```" in output:
                 output = output.split("```")[1].split("```")[0].strip()
-            
+
             return json.loads(output)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON from Qwen output: {e}")
@@ -333,10 +398,10 @@ def create_llm_client(provider: str, config: Dict[str, Any]):
 if __name__ == "__main__":
     # Test Gemini API
     from config import load_config
-    
+
     config = load_config()
     gemini = GeminiAPI(config.api_keys.gemini.to_dict())
-    
+
     response = gemini.generate("Write a short poem about AI tutoring.")
     print("Gemini response:")
     print(response)
