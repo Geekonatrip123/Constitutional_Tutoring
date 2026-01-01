@@ -18,7 +18,6 @@ class LLMCorrectnessJudge:
     """
     Uses Qwen3-8B to judge if student response indicates understanding.
     Maintains full conversation memory.
-    Supports sharing model with deliberation generator to save VRAM.
     """
     
     def __init__(
@@ -415,49 +414,3 @@ if __name__ == "__main__":
     # Initialize tracer
     tracer = KnowledgeTracer(llm_judge=llm_judge)
     
-    # Simulate a 10-turn conversation
-    problem = "Solve for x: 3x + 7 = 22"
-    
-    turns = [
-        ("I don't know where to start with this problem", "confused"),
-        ("Do I need to subtract something?", "confused"),
-        ("Should I subtract 7 from both sides?", "confused"),
-        ("Ok so I get 3x = 15", "neutral"),
-        ("Wait is that right? 22 - 7 = 15?", "neutral"),
-        ("Yes! So 3x = 15", "neutral"),
-        ("Now what do I do with the 3?", "confused"),
-        ("Oh I divide both sides by 3!", "neutral"),
-        ("So x = 5", "correct"),
-        ("Let me check: 3(5) + 7 = 15 + 7 = 22. Yes!", "correct"),
-    ]
-    
-    print("\n" + "=" * 70)
-    print("KNOWLEDGE TRACING SIMULATION (10 TURNS)")
-    print("=" * 70)
-    print(f"Problem: {problem}\n")
-    
-    for i, (message, state) in enumerate(turns):
-        mastery = tracer.update(
-            problem=problem,
-            student_message=message,
-            expected_state=state,
-            tutor_action="provide_hint",
-            tutor_response=f"[Tutor provides guidance for turn {i+1}]"
-        )
-        
-        print(f"Turn {i+1}: '{message}'")
-        print(f"  State: {state:12s} | Mastery: {mastery:.3f}")
-    
-    imv = tracer.calculate_imv()
-    trajectory = tracer.get_mastery_trajectory()
-    
-    print("\n" + "=" * 70)
-    print("RESULTS")
-    print("=" * 70)
-    print(f"IMV (Inferred Mastery Velocity): {imv:.4f} mastery/turn")
-    print(f"Initial Mastery: {trajectory[0]:.3f}")
-    print(f"Final Mastery:   {trajectory[-1]:.3f}")
-    print(f"Total Gain:      {trajectory[-1] - trajectory[0]:.3f}")
-    print(f"\nMastery Trajectory:")
-    print(f"  {' → '.join([f'{m:.3f}' for m in trajectory])}")
-    print("=" * 70)
