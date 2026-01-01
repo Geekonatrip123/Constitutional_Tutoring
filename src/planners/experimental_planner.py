@@ -1,6 +1,7 @@
 """
-Experimental Planner: Deliberative Hybrid Architecture
-4-stage pipeline using all trained models for transparent, principled decision-making.
+Experimental Planner: Deliberative Hybrid Architecture with Knowledge Tracing
+4-stage pipeline 
+
 """
 
 import json
@@ -13,15 +14,143 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 from sentence_transformers import SentenceTransformer
+import google.generativeai as genai
+
+# Import Knowledge Tracer
+import sys
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from src.evaluation.knowledge_tracer import KnowledgeTracer, LLMCorrectnessJudge
+
+class RotatingGeminiWrapper:
+    def __init__(self, planner):
+        """
+        Initialize wrapper with reference to planner.
+        
+        Args:
+            planner: ExperimentalPlanner instance with Gemini rotation
+        """
+        self.planner = planner
+    
+    def generate_text(self, prompt: str, max_tokens: int = 150, temperature: float = 0.3) -> str:
+        """
+        
+        Args:
+            prompt: Text prompt
+            max_tokens: Max output tokens
+            temperature: Sampling temperature
+        
+        Returns:
+            Generated text
+        """
+        max_retries = len(self.planner.gemini_api_keys)
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.planner.gemini_model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens
+                    )
+                )
+                return response.text.strip()
+            
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                if "429" in str(e) or "quota" in error_msg or "resource" in error_msg:
+                    # Rate limit hit, rotate key
+                    print(f"   [Classifier] API limit hit, rotating key...")
+                    if self.planner._rotate_gemini_key():
+                        time.sleep(1)
+                        continue
+                    else:
+                        # All keys exhausted, use DPO fallback
+                        print(f"   [Classifier] All keys exhausted, using DPO fallback")
+                        return self.planner._enrich_with_qwen_fallback(prompt)
+                else:
+                    # Other error, raise immediately
+                    raise
+        
+        
+        return self.planner._enrich_with_qwen_fallback(prompt)
+    
+    def generate_json(self, prompt: str, max_tokens: int = 150, temperature: float = 0.3) -> dict:
+        """
+        Compatibility method for classifier that expects JSON output.
+        
+        Args:
+            prompt: Text prompt
+            max_tokens: Max output tokens
+            temperature: Sampling temperature
+        
+        Returns:
+            Parsed JSON dict
+        """
+        import json
+        
+        max_retries = len(self.planner.gemini_api_keys)
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.planner.gemini_model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens
+                    )
+                )
+                
+                response_text = response.text.strip()
+    
+                try:
+                    if "```json" in response_text:
+                        response_text = response_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in response_text:
+                        response_text = response_text.split("```")[1].split("```")[0].strip()
+                    
+                    return json.loads(response_text)
+                except json.JSONDecodeError:
+                    return {"text": response_text}
+            
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                if "429" in str(e) or "quota" in error_msg or "resource" in error_msg:
+                    # Rate limit hit, rotate key
+                    print(f"   [Classifier] API limit hit, rotating key...")
+                    if self.planner._rotate_gemini_key():
+                        time.sleep(1)
+                        continue
+                    else:
+                        # All keys exhausted, return fallback dict
+                        print(f"   [Classifier] All keys exhausted, using fallback")
+                        return {"text": "fallback", "error": "API exhausted"}
+                else:
+                    # Other error
+                    if attempt == max_retries - 1:
+                        # Last attempt, return error dict
+                        return {"text": "error", "error": str(e)}
+                    else:
+                        time.sleep(1)
+                        continue
+        
+        # All retries failed
+        return {"text": "fallback", "error": "All retries failed"}
 
 
 class ExperimentalPlanner:
     """
-    Deliberative Hybrid Planner using 4-stage pipeline:
+    Deliberative Hybrid Planner using 4-stage pipeline + Knowledge Tracing:
+    Stage 0: COSIKE Scene Enrichment (Gemini 2.5 Flash API with DPO fallback)
     Stage 1: Student State Classification (student_state_classifier)
     Stage 2: Deliberation Generation (DPO-finetuned Qwen3-8B)
     Stage 3: Alignment Scoring (alignment_scorer)
     Stage 4: Final Selection (synthesizing LLM)
+    + Knowledge Tracing: Track student mastery and calculate IMV (uses same DPO model)
+    
+    VRAM-optimized: Only ONE Qwen3-8B model loaded (DPO-finetuned)
+    Used for: 1) Deliberations, 2) COSIKE fallback, 3) Knowledge tracing
     """
 
     def __init__(
@@ -29,7 +158,8 @@ class ExperimentalPlanner:
         student_state_classifier_path: Optional[str] = None,
         deliberation_generator_path: str = None,
         alignment_scorer_path: str = None,
-        use_quantization: bool = True
+        use_quantization: bool = True,
+        enable_knowledge_tracing: bool = True
     ):
         """
         Initialize Experimental Planner with all trained models.
@@ -39,10 +169,12 @@ class ExperimentalPlanner:
             deliberation_generator_path: Path to DPO-finetuned model (LoRA adapters)
             alignment_scorer_path: Path to alignment scorer
             use_quantization: Use 4-bit NF4 quantization
+            enable_knowledge_tracing: Enable knowledge tracing with IMV metric
         """
         print("=" * 80)
         print("INITIALIZING EXPERIMENTAL PLANNER")
-        print("4-Stage Deliberative Hybrid Architecture")
+        print("4-Stage + COSIKE (Gemini 2.5 Flash + DPO Fallback) + Knowledge Tracing")
+        print("VRAM-Optimized: Single Qwen3-8B (DPO-finetuned)")
         print("=" * 80)
 
         # Pedagogical actions
@@ -69,18 +201,45 @@ class ExperimentalPlanner:
             6: "Maintain Factual Integrity"
         }
 
-        # Stage 1: Student State Classifier
-        self._load_student_state_classifier(student_state_classifier_path)
+        # Stage 0: COSIKE Enrichment with Gemini API (key rotation)
+        self._init_gemini_api()
 
-        # Stage 2: Deliberation Generator (DPO-finetuned)
+        # Stage 2: Deliberation Generator (DPO-finetuned) - LOAD BEFORE CLASSIFIER
+        # This will be shared with COSIKE fallback and Knowledge Tracer
         self._load_deliberation_generator(deliberation_generator_path, use_quantization)
+
+        # Stage 1: Student State Classifier (uses Gemini rotation wrapper)
+        self._load_student_state_classifier(student_state_classifier_path)
 
         # Stage 3: Alignment Scorer
         self._load_alignment_scorer(alignment_scorer_path)
 
+        # Knowledge Tracing - shares the SAME DPO model
+        self.enable_knowledge_tracing = enable_knowledge_tracing
+        self.knowledge_tracer = None
+        self.llm_judge = None
+        
+        if enable_knowledge_tracing:
+            print("\n[KNOWLEDGE TRACING] Initializing (sharing DPO model)...")
+            try:
+                # Share the DPO model with knowledge tracer
+                self.llm_judge = LLMCorrectnessJudge(
+                    model=self.delib_model,
+                    tokenizer=self.delib_tokenizer,
+                    use_shared_model=True
+                )
+                self.knowledge_tracer = KnowledgeTracer(llm_judge=self.llm_judge)
+                print("   ✅ Knowledge Tracer initialized (shared model)")
+            except Exception as e:
+                print(f"   ⚠️  Warning: Could not load knowledge tracer: {e}")
+                import traceback
+                traceback.print_exc()
+                self.enable_knowledge_tracing = False
+
         # Logging
         self.turn_logs = []
         self.student_state_history = []
+        self.current_problem = None
 
         print("\n✅ Experimental Planner initialized!")
         if torch.cuda.is_available():
@@ -88,43 +247,67 @@ class ExperimentalPlanner:
             print(f"   VRAM allocated: {allocated:.2f} GB")
         print("=" * 80)
 
+    def _init_gemini_api(self):
+        """Initialize Gemini API with multiple keys for rotation."""
+        print(f"\n[STAGE 0] Initializing COSIKE Enrichment (Gemini 2.5 Flash)...")
+        
+        
+        self.current_key_index = 0
+        self.gemini_model_name = "gemini-2.5-flash"
+        
+        try:
+            # Configure first key
+            genai.configure(api_key=self.gemini_api_keys[self.current_key_index])
+            self.gemini_model = genai.GenerativeModel(self.gemini_model_name)
+            
+            print(f"   ✅ Gemini API initialized with {len(self.gemini_api_keys)} keys")
+            print(f"   Model: {self.gemini_model_name}")
+        except Exception as e:
+            print(f"   ⚠️  Gemini initialization failed: {e}")
+            print(f"   Will use DPO-Qwen fallback for all COSIKE enrichment")
+
+    def _rotate_gemini_key(self):
+        """Rotate to next API key."""
+        self.current_key_index = (self.current_key_index + 1) % len(self.gemini_api_keys)
+        
+        try:
+            genai.configure(api_key=self.gemini_api_keys[self.current_key_index])
+            self.gemini_model = genai.GenerativeModel(self.gemini_model_name)
+            print(f"   🔄 Rotated to API key #{self.current_key_index + 1}")
+            return True
+        except Exception as e:
+            print(f"   ⚠️  Key rotation failed: {e}")
+            return False
+
     def _load_student_state_classifier(self, classifier_path: Optional[str]):
-        """Load Stage 1: Student State Classifier."""
+        """Load Stage 1: Student State Classifier with shared Gemini rotation."""
         print(f"\n[STAGE 1] Loading Student State Classifier...")
 
         self.student_state_classifier = None
 
         if classifier_path:
             try:
-                import sys
-                sys.path.append(str(Path(__file__).parent.parent.parent))
-                
-                # Import your existing classifier
                 from src.models.student_state_classifier import load_student_state_classifier
-                from src.utils.llm_utils import GeminiAPI
-                from src.utils.config import load_config
 
-                # Load config for Gemini API
-                print(f"   Loading configuration...")
-                config = load_config()
-                gemini = GeminiAPI(config.api_keys.gemini.to_dict())
-
-                # Load complete classifier
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 
-                print(f"   Loading SEC model and k-NN classifier...")
+                print(f"   Loading SEC model and k-NN classifier with balanced data...")
+                print(f"   Using experimental planner's Gemini instance (15 keys with rotation)")
+
+                # Create wrapper to share Gemini rotation
+                gemini_wrapper = RotatingGeminiWrapper(self)
 
                 self.student_state_classifier = load_student_state_classifier(
                     sec_checkpoint_path=classifier_path,
                     tokenizer_dir=str(Path(classifier_path).parent / "tokenizer"),
-                    train_embeddings_path="src/data/processed/train_embeddings.npy",
-                    train_labels_path="src/data/processed/train_labels.npy",
-                    llm_api=gemini,
+                    train_embeddings_path="src/data/processed/train_embeddings_balanced.npy",
+                    train_labels_path="src/data/processed/train_labels_balanced.npy",
+                    llm_api=gemini_wrapper,
                     device=device,
                     k=5
                 )
 
-                print(f"   ✅ Student state classifier loaded")
+                print(f"   ✅ Student state classifier loaded (using rotating Gemini + DPO fallback)")
 
             except Exception as e:
                 print(f"   ⚠️  Warning: Could not load classifier: {e}")
@@ -135,7 +318,7 @@ class ExperimentalPlanner:
             print(f"   ⚠️  Using heuristic fallback (no classifier path provided)")
 
     def _load_deliberation_generator(self, generator_path: str, use_quantization: bool):
-        """Load Stage 2: DPO-finetuned Deliberation Generator."""
+        """Load Stage 2: DPO-finetuned Deliberation Generator (ONLY QWEN MODEL)."""
         print(f"\n[STAGE 2] Loading Deliberation Generator (DPO-finetuned)...")
 
         if not generator_path:
@@ -143,12 +326,10 @@ class ExperimentalPlanner:
 
         from peft import PeftConfig
 
-        # Load PEFT config
         peft_config = PeftConfig.from_pretrained(generator_path)
         BASE_MODEL = peft_config.base_model_name_or_path
         print(f"   Base model: {BASE_MODEL}")
 
-        # Load tokenizer
         self.delib_tokenizer = AutoTokenizer.from_pretrained(
             generator_path,
             trust_remote_code=True
@@ -156,7 +337,6 @@ class ExperimentalPlanner:
         if self.delib_tokenizer.pad_token is None:
             self.delib_tokenizer.pad_token = self.delib_tokenizer.eos_token
 
-        # Load base model
         if use_quantization:
             print(f"   Using NF4 4-bit quantization")
             bnb_config = BitsAndBytesConfig(
@@ -182,7 +362,6 @@ class ExperimentalPlanner:
                 low_cpu_mem_usage=True
             )
 
-        # Load LoRA adapters (DPO-finetuned)
         print(f"   Loading DPO LoRA adapters...")
         self.delib_model = PeftModel.from_pretrained(
             base_model,
@@ -190,7 +369,7 @@ class ExperimentalPlanner:
             is_trainable=False
         )
         self.delib_model.eval()
-        print(f"   ✅ DPO-finetuned model loaded")
+        print(f"   ✅ DPO-finetuned model loaded (shared for deliberation + COSIKE fallback + knowledge tracing)")
 
     def _load_alignment_scorer(self, scorer_path: str):
         """Load Stage 3: Alignment Scorer."""
@@ -208,43 +387,208 @@ class ExperimentalPlanner:
         except Exception as e:
             raise ValueError(f"Could not load alignment scorer: {e}")
 
+    def reset_for_new_scenario(self, problem: str):
+        """Reset planner for a new scenario."""
+        self.current_problem = problem
+        self.student_state_history = []
+        
+        if self.knowledge_tracer:
+            self.knowledge_tracer.reset()
+
+    def _enrich_with_qwen_fallback(self, student_message: str) -> str:
+        """
+        Fallback COSIKE enrichment using DPO-finetuned Qwen3-8B.
+        Used when all Gemini API keys are exhausted.
+        
+        Args:
+            student_message: Original student message or prompt
+        
+        Returns:
+            Enriched text with scene and keywords (or original message if it's a classifier prompt)
+        """
+        print(f"   🔄 Using DPO-Qwen for COSIKE enrichment (Gemini exhausted)")
+        
+        # Check if this is a classifier enrichment request (has "scene" keyword)
+        if "scene" in student_message.lower() and "keywords" in student_message.lower():
+            # This is the classifier trying to enrich - extract the actual student message
+            # Parse out the student message from the prompt
+            if 'Student: "' in student_message:
+                actual_message = student_message.split('Student: "')[1].split('"')[0]
+            else:
+                actual_message = student_message
+            
+            # Just return the original message with basic enrichment
+            return f"{actual_message}. Student is working through problem. thinking, processing, engaged"
+        
+        # Otherwise, this is a regular COSIKE enrichment request
+        enrichment_prompt = f"""Analyze this student message and generate scene description + emotion keywords.
+
+Student: "{student_message}"
+
+Generate:
+1. Scene: One sentence describing emotional/cognitive state
+2. Keywords: 5 emotion keywords (confused, frustrated, confident, disengaged, neutral, uncertain, stuck, understanding, etc.)
+
+Format:
+Scene: [description]
+Keywords: [word1, word2, word3, word4, word5]"""
+
+        messages = [{"role": "user", "content": enrichment_prompt}]
+        text = self.delib_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        inputs = self.delib_tokenizer([text], return_tensors="pt").to("cuda")
+        
+        with torch.no_grad():
+            outputs = self.delib_model.generate(
+                **inputs,
+                max_new_tokens=100,
+                temperature=0.3,
+                do_sample=False,
+                pad_token_id=self.delib_tokenizer.pad_token_id,
+                eos_token_id=self.delib_tokenizer.eos_token_id
+            )
+        
+        response = self.delib_tokenizer.decode(
+            outputs[0][inputs['input_ids'].shape[1]:],
+            skip_special_tokens=True
+        )
+        
+        # Parse scene and keywords
+        scene = ""
+        keywords = ""
+        
+        try:
+            if "Scene:" in response and "Keywords:" in response:
+                parts = response.split("Keywords:")
+                scene = parts[0].replace("Scene:", "").strip()
+                keywords = parts[1].strip()
+            else:
+                # Fallback
+                scene = "Student is working through problem"
+                keywords = "thinking, processing, engaged"
+        except:
+            scene = "Student is working through problem"
+            keywords = "thinking, processing, engaged"
+        
+        # Combine
+        enriched_text = f"{student_message}. {scene}. {keywords}"
+        
+        return enriched_text
+
+    def _enrich_with_cosike(self, student_message: str) -> str:
+        """
+        MANDATORY COSIKE scene enrichment using Gemini 2.5 Flash.
+        Falls back to DPO-Qwen if all API keys exhausted.
+        
+        Args:
+            student_message: Original student message
+        
+        Returns:
+            Enriched text with scene and keywords
+        """
+        enrichment_prompt = f"""Analyze this student message and generate scene description + emotion keywords.
+
+Student: "{student_message}"
+
+Generate:
+1. Scene: One sentence describing emotional/cognitive state
+2. Keywords: 5 emotion keywords (confused, frustrated, confident, disengaged, neutral, uncertain, stuck, understanding, etc.)
+
+Format:
+Scene: [description]
+Keywords: [word1, word2, word3, word4, word5]"""
+
+        max_retries = len(self.gemini_api_keys)  # Try all keys
+        for attempt in range(max_retries):
+            try:
+                response = self.gemini_model.generate_content(
+                    enrichment_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        max_output_tokens=1000
+                    )
+                )
+                
+                response_text = response.text.strip()
+                
+                # Parse scene and keywords
+                scene = ""
+                keywords = ""
+                
+                if "Scene:" in response_text and "Keywords:" in response_text:
+                    parts = response_text.split("Keywords:")
+                    scene = parts[0].replace("Scene:", "").strip()
+                    keywords = parts[1].strip()
+                else:
+                    # Fallback
+                    scene = "Student is working through problem"
+                    keywords = "thinking, processing, engaged"
+                
+                # Combine
+                enriched_text = f"{student_message}. {scene}. {keywords}"
+                
+                return enriched_text
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                print(f"   ⚠️  COSIKE enrichment attempt {attempt + 1} failed: {e}")
+                
+                if "429" in str(e) or "quota" in error_msg or "resource" in error_msg:
+                    # Rate limit hit, try rotating key
+                    if self._rotate_gemini_key():
+                        time.sleep(1)  # Brief pause before retry
+                        continue
+                    else:
+                        # All keys exhausted, use DPO fallback
+                        print(f"   🔄 All Gemini keys exhausted, switching to DPO-Qwen fallback")
+                        return self._enrich_with_qwen_fallback(student_message)
+                
+                elif attempt == max_retries - 1:
+                    # Final attempt failed, use DPO fallback
+                    print(f"   🔄 Using DPO-Qwen fallback after {max_retries} attempts")
+                    return self._enrich_with_qwen_fallback(student_message)
+                else:
+                    time.sleep(2)  # Retry with delay
+        
+        print(f"   🔄 Using DPO-Qwen fallback (final safety)")
+        return self._enrich_with_qwen_fallback(student_message)
+
     def plan_action(
         self,
         conversation_history: List[Dict[str, str]],
         current_problem: str,
         turn_number: int,
         num_candidates: int = 5,
-        max_new_tokens: int = 512,
+        max_new_tokens: int = 2048,
         temperature: float = 0.7
     ) -> Dict[str, Any]:
-        """
-        Main planning function - 4-stage deliberative pipeline.
-
-        Args:
-            conversation_history: List of {"role": "student/tutor", "message": "..."}
-            current_problem: The math problem being worked on
-            turn_number: Current turn number
-            num_candidates: Number of candidate actions to generate
-            max_new_tokens: Max tokens for generation
-            temperature: Sampling temperature
-
-        Returns:
-            Complete result dict with all stages and metrics
-        """
+        """Main planning function - 4-stage deliberative pipeline + knowledge tracing."""
         start_time = time.time()
 
         print(f"\n{'='*80}")
         print(f"EXPERIMENTAL PLANNER - TURN {turn_number}")
         print(f"{'='*80}")
 
-        # Get latest student message
+        if turn_number == 1 or self.current_problem != current_problem:
+            self.reset_for_new_scenario(current_problem)
+
         latest_student_msg = self._get_latest_student_message(conversation_history)
+
+        # ===== STAGE 0: COSIKE ENRICHMENT =====
+        stage0_start = time.time()
+        enriched_msg = self._enrich_with_cosike(latest_student_msg)
+        stage0_time = (time.time() - stage0_start) * 1000
+        print(f"\n[STAGE 0]  COSIKE enrichment (Gemini 2.5 Flash / DPO fallback) ({stage0_time:.0f}ms)")
 
         # ===== STAGE 1: STRUCTURED STATE ASSESSMENT =====
         stage1_start = time.time()
-        student_state = self._stage1_assess_state(latest_student_msg)
+        student_state = self._stage1_assess_state(enriched_msg)  # Use enriched text!
         stage1_time = (time.time() - stage1_start) * 1000
-        print(f"\n[STAGE 1] ✅ State assessed ({stage1_time:.0f}ms)")
+        print(f"\n[STAGE 1]  State assessed ({stage1_time:.0f}ms)")
         print(f"   {student_state}")
 
         # ===== STAGE 2: PRINCIPLED DELIBERATION & CANDIDATE GENERATION =====
@@ -281,48 +625,47 @@ class ExperimentalPlanner:
         print(f"   Selected: {final_selection['selected_action']}")
         print(f"   Alignment Score: {final_selection['alignment_score']:.3f}")
 
-        # Calculate total metrics
-        total_latency = (time.time() - start_time) * 1000
+        # ===== KNOWLEDGE TRACING UPDATE =====
+        mastery = None
+        if self.enable_knowledge_tracing and self.knowledge_tracer:
+            expected_state = self._get_primary_state(student_state)
+            
+            mastery = self.knowledge_tracer.update(
+                problem=current_problem,
+                student_message=latest_student_msg,
+                expected_state=expected_state,
+                tutor_action=final_selection['selected_action'],
+                tutor_response=None
+            )
+            
+            print(f"\n[KNOWLEDGE TRACING] Mastery updated: {mastery:.3f}")
 
-        # Count tokens (approximate)
+        total_latency = (time.time() - start_time) * 1000
         total_tokens = self._estimate_tokens(candidates, final_selection)
 
-        # Build comprehensive result
         result = {
-            # Turn info
             "turn_number": turn_number,
             "selected_action": final_selection['selected_action'],
             "deliberation": final_selection['deliberation'],
             "reasoning": final_selection['synthesis_reasoning'],
             "alignment_score": final_selection['alignment_score'],
-
-            # Stage details
             "student_state": student_state,
             "all_candidates": scored_candidates,
-
-            # Stage timings
+            "stage0_time_ms": stage0_time,  # COSIKE
             "stage1_time_ms": stage1_time,
             "stage2_time_ms": stage2_time,
             "stage3_time_ms": stage3_time,
             "stage4_time_ms": stage4_time,
-
-            # EFFICIENCY METRICS
             "latency_ms": total_latency,
             "total_tokens": total_tokens,
-
-            # EFFECTIVENESS METRIC
             "pedagogical_alignment_score": final_selection['alignment_score'],
-
-            # TRANSPARENCY METRICS (for DAC, PCF)
+            "student_mastery": mastery,
             "deliberation_text": final_selection['deliberation'],
             "principle_references": self._extract_principle_references(final_selection['deliberation']),
-
-            # Metadata
             "timestamp": time.time(),
             "planner_type": "experimental"
         }
 
-        # Log
         self.turn_logs.append(result)
         self.student_state_history.append(student_state)
 
@@ -331,21 +674,28 @@ class ExperimentalPlanner:
 
         return result
 
-    def _stage1_assess_state(self, student_message: str) -> Dict[str, float]:
+    def _get_primary_state(self, student_state: Dict[str, float]) -> str:
+        """Get the primary emotional state from probabilities."""
+        max_prob = max(student_state.values())
+        for key, value in student_state.items():
+            if value == max_prob:
+                return key.replace('is_', '')
+        return "neutral"
+
+    def _stage1_assess_state(self, enriched_message: str) -> Dict[str, float]:
         """
         STAGE 1: Structured State Assessment.
-        Uses trained student_state_classifier.
+        Uses COSIKE-enriched text with trained classifier.
         """
         if self.student_state_classifier is None:
-            # Fallback heuristic
-            msg_lower = student_message.lower()
+            msg_lower = enriched_message.lower()
 
             is_frustrated = any(word in msg_lower for word in 
                 ['frustrated', 'stuck', 'can\'t', 'impossible', 'giving up'])
             is_confused = any(word in msg_lower for word in 
-                ['confused', 'what', 'how', 'why', '?', 'don\'t understand'])
+                ['confused', 'what', 'how', 'why', '?', 'don\'t understand', 'uncertain', 'lost'])
             is_correct = any(word in msg_lower for word in 
-                ['got it', 'understand', 'makes sense', 'i see', 'right'])
+                ['got it', 'understand', 'makes sense', 'i see', 'right', 'confident', 'clarity'])
 
             return {
                 'is_frustrated': 0.8 if is_frustrated else 0.2,
@@ -355,10 +705,9 @@ class ExperimentalPlanner:
                 'is_neutral': 0.5
             }
         else:
-            # Use trained classifier - returns pedagogical state string
-            pedagogical_state = self.student_state_classifier.predict(student_message)
+            # Use enriched text for classification
+            pedagogical_state = self.student_state_classifier.predict(enriched_message)
 
-            # Convert to probability dict
             state_probs = {
                 'is_frustrated': 0.0,
                 'is_confused': 0.0,
@@ -367,12 +716,10 @@ class ExperimentalPlanner:
                 'is_neutral': 0.0
             }
 
-            # Set predicted state to high probability
             state_key = f"is_{pedagogical_state}"
             if state_key in state_probs:
                 state_probs[state_key] = 0.9
 
-            # Set others to low baseline
             for key in state_probs:
                 if key != state_key:
                     state_probs[key] = 0.1
@@ -389,18 +736,13 @@ class ExperimentalPlanner:
         max_new_tokens: int,
         temperature: float
     ) -> List[Dict[str, str]]:
-        """
-        STAGE 2: Principled Deliberation & Candidate Generation.
-        Uses DPO-finetuned deliberation generator.
-        """
+        """STAGE 2: Principled Deliberation & Candidate Generation."""
         candidates = []
 
-        # Generate deliberations for multiple candidate actions
         for action in np.random.choice(self.pedagogical_actions, 
                                        size=min(num_candidates, len(self.pedagogical_actions)), 
                                        replace=False):
 
-            # Build prompt for this candidate
             prompt = self._build_deliberation_prompt(
                 student_state=student_state,
                 current_problem=current_problem,
@@ -408,7 +750,6 @@ class ExperimentalPlanner:
                 candidate_action=action
             )
 
-            # Generate deliberation using DPO-finetuned model
             deliberation = self._generate_single_deliberation(
                 prompt=prompt,
                 max_new_tokens=max_new_tokens,
@@ -429,9 +770,7 @@ class ExperimentalPlanner:
         latest_student_msg: str,
         candidate_action: str
     ) -> str:
-        """Build prompt for deliberation generation (same format as training)."""
-
-        # Format student state
+        """Build prompt for deliberation generation."""
         state_str = self._format_student_state(student_state)
 
         prompt = f"""You are a pedagogical AI tutor for mathematics (Algebra, Grades 5-12).
@@ -460,15 +799,11 @@ DELIBERATION:"""
         temperature: float
     ) -> str:
         """Generate a single deliberation using DPO-finetuned model."""
-
-        # Tokenize
         inputs = self.delib_tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
 
-        # Move to GPU
         if torch.cuda.is_available():
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
-        # Generate
         with torch.no_grad():
             outputs = self.delib_model.generate(
                 **inputs,
@@ -480,10 +815,8 @@ DELIBERATION:"""
                 eos_token_id=self.delib_tokenizer.eos_token_id
             )
 
-        # Decode
         full_output = self.delib_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-        # Extract just the deliberation (after "DELIBERATION:")
         if "DELIBERATION:" in full_output:
             deliberation = full_output.split("DELIBERATION:")[-1].strip()
         else:
@@ -495,17 +828,11 @@ DELIBERATION:"""
         self,
         candidates: List[Dict[str, str]]
     ) -> List[Dict[str, Any]]:
-        """
-        STAGE 3: Fast & Consistent Alignment Scoring.
-        Uses trained alignment_scorer.
-        """
+        """STAGE 3: Fast & Consistent Alignment Scoring."""
         scored_candidates = []
 
         for candidate in candidates:
-            # Generate embedding
             embedding = self.embedding_model.encode([candidate['deliberation']])
-
-            # Predict alignment score
             score = self.alignment_scorer.predict(embedding)[0]
             score = float(np.clip(score, 0.0, 1.0))
 
@@ -515,9 +842,7 @@ DELIBERATION:"""
                 'alignment_score': score
             })
 
-        # Sort by alignment score (highest first)
         scored_candidates.sort(key=lambda x: x['alignment_score'], reverse=True)
-
         return scored_candidates
 
     def _stage4_final_selection(
@@ -526,14 +851,7 @@ DELIBERATION:"""
         scored_candidates: List[Dict[str, Any]],
         conversation_history: List[Dict[str, str]]
     ) -> Dict[str, Any]:
-        """
-        STAGE 4: Informed Final Selection.
-        Synthesizing step that considers all evidence.
-        
-        For now: Simply select the highest-scored candidate.
-        Future: Could use LLM to synthesize and make nuanced final decision.
-        """
-        # Simple strategy: Pick highest alignment score
+        """STAGE 4: Informed Final Selection."""
         best_candidate = scored_candidates[0]
 
         return {
@@ -565,10 +883,9 @@ DELIBERATION:"""
 
     def _estimate_tokens(self, candidates: List[Dict], final_selection: Dict) -> int:
         """Estimate total tokens used across all stages."""
-        # Rough estimate
         total_chars = sum(len(c['deliberation']) for c in candidates)
         total_chars += len(final_selection['synthesis_reasoning'])
-        return total_chars // 4  # Rough token estimate
+        return total_chars // 4
 
     def _get_latest_student_message(self, conversation_history: List[Dict[str, str]]) -> str:
         """Extract the most recent student message."""
@@ -576,6 +893,27 @@ DELIBERATION:"""
             if turn["role"] == "student":
                 return turn["message"]
         return "No student message yet."
+
+    def calculate_imv(self) -> float:
+        """Calculate Inferred Mastery Velocity (IMV) for current scenario."""
+        if not self.enable_knowledge_tracing or not self.knowledge_tracer:
+            return 0.0
+        
+        return self.knowledge_tracer.calculate_imv()
+
+    def get_final_mastery(self) -> float:
+        """Get final mastery level for current scenario."""
+        if not self.enable_knowledge_tracing or not self.knowledge_tracer:
+            return 0.0
+        
+        return self.knowledge_tracer.get_final_mastery()
+
+    def get_mastery_trajectory(self) -> List[float]:
+        """Get mastery trajectory over all turns."""
+        if not self.enable_knowledge_tracing or not self.knowledge_tracer:
+            return []
+        
+        return self.knowledge_tracer.get_mastery_trajectory()
 
     def calculate_narr(self) -> float:
         """Calculate Negative Affect Reduction Rate (NARR)."""
@@ -603,10 +941,7 @@ DELIBERATION:"""
         return len(resolutions) / len(triggers)
 
     def calculate_dac(self) -> float:
-        """
-        Calculate Deliberation-Action Congruence (DAC).
-        Average alignment score of all selected actions.
-        """
+        """Calculate Deliberation-Action Congruence (DAC)."""
         if not self.turn_logs:
             return 0.0
 
@@ -614,10 +949,7 @@ DELIBERATION:"""
         return np.mean(scores)
 
     def calculate_pcf(self) -> Dict[int, float]:
-        """
-        Calculate Principle Coverage Frequency (PCF).
-        Percentage of deliberations referencing each principle.
-        """
+        """Calculate Principle Coverage Frequency (PCF)."""
         if not self.turn_logs:
             return {}
 
@@ -628,7 +960,6 @@ DELIBERATION:"""
             for principle_num in log.get('principle_references', []):
                 principle_counts[principle_num] += 1
 
-        # Convert to percentages
         pcf = {i: (count / total) * 100 for i, count in principle_counts.items()}
 
         return pcf
@@ -645,148 +976,47 @@ DELIBERATION:"""
         print(f"✅ Logs saved to: {output_path}")
 
     def get_metrics_summary(self) -> Dict[str, Any]:
-        """Get comprehensive metrics summary."""
+        """Get comprehensive metrics summary including IMV."""
         if not self.turn_logs:
             return {}
 
-        # EFFICIENCY METRICS
         latencies = [log["latency_ms"] for log in self.turn_logs]
         tokens = [log["total_tokens"] for log in self.turn_logs]
 
-        # Stage timings
+        stage0_times = [log["stage0_time_ms"] for log in self.turn_logs]  # COSIKE
         stage1_times = [log["stage1_time_ms"] for log in self.turn_logs]
         stage2_times = [log["stage2_time_ms"] for log in self.turn_logs]
         stage3_times = [log["stage3_time_ms"] for log in self.turn_logs]
         stage4_times = [log["stage4_time_ms"] for log in self.turn_logs]
 
-        # EFFECTIVENESS METRICS
         alignment_scores = [log["alignment_score"] for log in self.turn_logs]
+        
+        imv = self.calculate_imv()
+        final_mastery = self.get_final_mastery()
+        mastery_trajectory = self.get_mastery_trajectory()
 
-        # TRANSPARENCY METRICS
         dac = self.calculate_dac()
         pcf = self.calculate_pcf()
-
-        # ROBUSTNESS METRICS
         narr = self.calculate_narr()
 
         return {
-            # Basic info
             "total_turns": len(self.turn_logs),
             "planner_type": "experimental",
-
-            # EFFICIENCY METRICS
             "avg_latency_ms": np.mean(latencies),
             "std_latency_ms": np.std(latencies),
             "avg_tokens_per_turn": np.mean(tokens),
             "total_tokens_used": sum(tokens),
-
-            # Stage breakdown
+            "avg_stage0_ms": np.mean(stage0_times),  # COSIKE
             "avg_stage1_ms": np.mean(stage1_times),
             "avg_stage2_ms": np.mean(stage2_times),
             "avg_stage3_ms": np.mean(stage3_times),
             "avg_stage4_ms": np.mean(stage4_times),
-
-            # EFFECTIVENESS METRICS
             "avg_pedagogical_alignment_score": np.mean(alignment_scores),
             "std_pedagogical_alignment_score": np.std(alignment_scores),
-
-            # TRANSPARENCY METRICS
+            "imv": imv,
+            "final_mastery": final_mastery,
+            "mastery_trajectory": mastery_trajectory,
             "deliberation_action_congruence": dac,
             "principle_coverage_frequency": pcf,
-
-            # ROBUSTNESS METRICS
             "negative_affect_reduction_rate": narr
         }
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    """Test the Experimental Planner."""
-
-    print("\n🚀 Initializing Experimental Planner...\n")
-
-    # Initialize planner with all trained models
-    planner = ExperimentalPlanner(
-        student_state_classifier_path="models/checkpoints/sec_mapper/best_model.pt",  # ← ADDED THIS
-        deliberation_generator_path=r"C:\Users\Shlok\Downloads\final_model",
-        alignment_scorer_path=r"models\alignment_scorer\alignment_scorer.pkl",
-        use_quantization=True
-    )
-
-    # Test Scenario 1: Confused student
-    print("\n" + "=" * 80)
-    print("TEST SCENARIO 1: Confused Student")
-    print("=" * 80)
-
-    conversation_history = [
-        {"role": "tutor", "message": "Let's solve: 3x + 7 = 22. What's your first step?"},
-        {"role": "student", "message": "I subtracted 7 from both sides and got 3x = 15, but now I'm stuck. What do I do with the 3?"}
-    ]
-
-    result = planner.plan_action(
-        conversation_history=conversation_history,
-        current_problem="Solve for x: 3x + 7 = 22",
-        turn_number=1,
-        num_candidates=5
-    )
-
-    print(f"\n📊 FINAL DECISION:")
-    print(f"   Selected Action: {result['selected_action']}")
-    print(f"   Alignment Score: {result['alignment_score']:.3f}")
-    print(f"   Deliberation: {result['deliberation'][:200]}...")
-    print(f"   Principles Referenced: {result['principle_references']}")
-
-    # Test Scenario 2: Frustrated student
-    print("\n" + "=" * 80)
-    print("TEST SCENARIO 2: Frustrated Student")
-    print("=" * 80)
-
-    conversation_history2 = [
-        {"role": "tutor", "message": "Factor: x² + 5x + 6"},
-        {"role": "student", "message": "I keep trying to factor this but I can't find two numbers that work! This is so frustrating!"}
-    ]
-
-    result2 = planner.plan_action(
-        conversation_history=conversation_history2,
-        current_problem="Factor: x² + 5x + 6",
-        turn_number=2,
-        num_candidates=5
-    )
-
-    print(f"\n📊 FINAL DECISION:")
-    print(f"   Selected Action: {result2['selected_action']}")
-    print(f"   Alignment Score: {result2['alignment_score']:.3f}")
-
-    # Save logs
-    planner.save_logs("logs/experimental_planner/test_run.json")
-
-    # Print comprehensive metrics
-    print("\n" + "=" * 80)
-    print("📈 COMPREHENSIVE METRICS SUMMARY:")
-    print("=" * 80)
-    metrics = planner.get_metrics_summary()
-
-    print(f"\n🎯 EFFICIENCY METRICS:")
-    print(f"   Total Turns: {metrics['total_turns']}")
-    print(f"   Avg Latency: {metrics['avg_latency_ms']:.0f} ms (±{metrics['std_latency_ms']:.0f})")
-    print(f"   - Stage 1 (State): {metrics['avg_stage1_ms']:.0f} ms")
-    print(f"   - Stage 2 (Delib): {metrics['avg_stage2_ms']:.0f} ms")
-    print(f"   - Stage 3 (Score): {metrics['avg_stage3_ms']:.0f} ms")
-    print(f"   - Stage 4 (Select): {metrics['avg_stage4_ms']:.0f} ms")
-    print(f"   Avg Tokens/Turn: {metrics['avg_tokens_per_turn']:.0f}")
-
-    print(f"\n✅ EFFECTIVENESS METRICS:")
-    print(f"   Avg Alignment Score: {metrics['avg_pedagogical_alignment_score']:.3f} (±{metrics['std_pedagogical_alignment_score']:.3f})")
-
-    print(f"\n🔍 TRANSPARENCY METRICS:")
-    print(f"   Deliberation-Action Congruence (DAC): {metrics['deliberation_action_congruence']:.3f}")
-    print(f"   Principle Coverage Frequency (PCF):")
-    for principle_num, percentage in metrics['principle_coverage_frequency'].items():
-        print(f"      Principle {principle_num}: {percentage:.1f}%")
-
-    print(f"\n💪 ROBUSTNESS METRICS:")
-    print(f"   Negative Affect Reduction Rate (NARR): {metrics['negative_affect_reduction_rate']:.2%}")
-
-    print("\n" + "=" * 80)
-    print("✅ EXPERIMENTAL PLANNER TEST COMPLETE")
-    print("=" * 80)

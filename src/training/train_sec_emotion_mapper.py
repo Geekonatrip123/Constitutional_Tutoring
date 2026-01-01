@@ -14,8 +14,6 @@ import logging
 from tqdm import tqdm
 import json
 from datetime import datetime
-
-# Add project root to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.models.sec_emotion_mapper import SECEmotionMapper, TripletLoss, create_sec_model
@@ -321,10 +319,10 @@ def main():
         distance_metric=train_config['distance_metric']
     )
     
-    # Create dataloaders
+    # Create dataloaders - UPDATED TO USE BALANCED DATA
     logger.info("Creating dataloaders...")
     train_dataloader = create_triplet_dataloader(
-        triplets_jsonl="./src/data/processed/train_triplets.jsonl",
+        triplets_jsonl=r"C:\Users\shlok\Research\src\data\processed\train_triplets_balanced.jsonl",  # ← CHANGED
         tokenizer=tokenizer,
         batch_size=train_config['batch_size'],
         max_length=128,
@@ -333,7 +331,7 @@ def main():
     )
     
     val_dataloader = create_triplet_dataloader(
-        triplets_jsonl="./src/data/processed/val_triplets.jsonl",
+        triplets_jsonl=r"C:\Users\shlok\Research\src\data\processed\val_triplets.jsonl",
         tokenizer=tokenizer,
         batch_size=train_config['batch_size'],
         max_length=128,
@@ -343,6 +341,9 @@ def main():
     
     logger.info(f"Train batches: {len(train_dataloader)}")
     logger.info(f"Val batches: {len(val_dataloader)}")
+    
+    # ALSO UPDATE CHECKPOINT DIR TO SAVE TO NEW LOCATION
+    train_config['checkpoint_dir'] = r"C:\Users\shlok\Research\models\checkpoints\sec_mapper_balanced"  # ← NEW LOCATION
     
     # Create trainer
     trainer = SECTrainer(
