@@ -199,12 +199,12 @@ class TripletGenerator:
 def main():
     """Main execution function."""
     
-    # Paths
-    PROCESSED_DIR = Path("./src/data/processed")
-    TRAIN_ENRICHED = PROCESSED_DIR / "train_dailydialog_enriched.jsonl"
+    # Paths - UPDATED
+    PROCESSED_DIR = Path(r"C:\Users\shlok\Research\src\data\processed")
+    TRAIN_ENRICHED = PROCESSED_DIR / "train_dailydialog_enriched_balanced.jsonl"  # ← CHANGED
     VAL_ENRICHED = PROCESSED_DIR / "validation_dailydialog_enriched.jsonl"
     
-    TRAIN_TRIPLETS = PROCESSED_DIR / "train_triplets.jsonl"
+    TRAIN_TRIPLETS = PROCESSED_DIR / "train_triplets_balanced.jsonl"  # ← CHANGED output name
     VAL_TRIPLETS = PROCESSED_DIR / "val_triplets.jsonl"
     
     # Initialize generator
@@ -212,7 +212,7 @@ def main():
     
     # Generate training triplets
     logger.info("=" * 80)
-    logger.info("GENERATING TRAINING TRIPLETS")
+    logger.info("GENERATING TRAINING TRIPLETS (FROM BALANCED DATA)")
     logger.info("=" * 80)
     
     train_utterances = generator.load_enriched_data(str(TRAIN_ENRICHED))

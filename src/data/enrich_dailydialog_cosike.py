@@ -189,7 +189,7 @@ DIALOGUES:
         self,
         input_csv: str,
         output_jsonl: str,
-        dialogues_per_batch: int = 10,  # Process 10 dialogues per API call
+        dialogues_per_batch: int = 10,  
         max_samples: int = None,
         save_every: int = 50,
         rate_limit_delay: float = 2.5,

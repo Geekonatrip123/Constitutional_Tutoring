@@ -140,13 +140,13 @@ def build_training_embeddings(
 def main():
     """Main execution function."""
     
-    # Paths
-    SEC_CHECKPOINT = "./models/checkpoints/sec_mapper/best_model.pt"
-    TOKENIZER_DIR = "./models/checkpoints/sec_mapper/tokenizer"
-    TRAIN_ENRICHED = "./src/data/processed/train_dailydialog_enriched.jsonl"
+    # Paths - UPDATED
+    SEC_CHECKPOINT = r"C:\Users\shlok\Research\models\checkpoints\sec_mapper\best_model.pt"
+    TOKENIZER_DIR = r"C:\Users\shlok\Research\models\checkpoints\sec_mapper\tokenizer"
+    TRAIN_ENRICHED = r"C:\Users\shlok\Research\src\data\processed\train_dailydialog_enriched_balanced.jsonl"  # ← CHANGED
     
-    OUTPUT_EMBEDDINGS = "./src/data/processed/train_embeddings.npy" 
-    OUTPUT_LABELS = "./src/data/processed/train_labels.npy"
+    OUTPUT_EMBEDDINGS = r"C:\Users\shlok\Research\src\data\processed\train_embeddings_balanced.npy"  # ← CHANGED
+    OUTPUT_LABELS = r"C:\Users\shlok\Research\src\data\processed\train_labels_balanced.npy"  # ← CHANGED
     
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -160,9 +160,8 @@ def main():
         output_embeddings_path=OUTPUT_EMBEDDINGS,
         output_labels_path=OUTPUT_LABELS,
         device=device,
-        max_samples=None  # Use all training data
+        max_samples=None  # Use all balanced training data
     )
-
 
 if __name__ == "__main__":
     main()
